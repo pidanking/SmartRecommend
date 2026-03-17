@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.1.3"
+    plugin_version = "1.2.0"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -74,7 +74,7 @@ class SmartRecommend(_PluginBase):
     _api_max_calls_per_window: int = 10  # 每个窗口最大调用次数
     
     # 当前插件版本
-    CURRENT_VERSION = "1.1.3"
+    CURRENT_VERSION = "1.2.0"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -692,36 +692,87 @@ class SmartRecommend(_PluginBase):
         """刷新推荐"""
         logger.info("[SmartRecommend] 开始刷新推荐...")
         
-        # 1. 验证配置
-        if not self._llm_api_key or not self._llm_base_url:
-            logger.warning("[SmartRecommend] LLM 未配置，请先配置 API Key 和 Base URL")
-            return
+        # 开始时间，用于计算耗时
+        import time
+        start_time = time.time()
         
-        if not self._emby_url or not self._emby_api_key:
-            logger.warning("[SmartRecommend] Emby 未配置，请先配置地址和 API Key")
-            return
+        try:
+            # ==================== 1. 验证配置 ====================
+            if not self._llm_api_key or not self._llm_base_url:
+                logger.warning("[SmartRecommend] LLM 未配置，请先配置 API Key 和 Base URL")
+                return
+            
+            if not self._emby_url or not self._emby_api_key:
+                logger.warning("[SmartRecommend] Emby 未配置，请先配置地址和 API Key")
+                return
+            
+            # ==================== 2. 获取观看历史 ====================
+            try:
+                watch_history = self._get_watch_history()
+                logger.info(f"[SmartRecommend] 获取到 {len(watch_history)} 条观看记录")
+            except Exception as e:
+                logger.error(f"[SmartRecommend] 获取观看历史失败: {e}")
+                watch_history = []
+            
+            # ==================== 3. 获取 Emby 分类 ====================
+            try:
+                categories = self._get_emby_categories()
+                logger.info(f"[SmartRecommend] 获取到 {len(categories)} 个分类")
+            except Exception as e:
+                logger.error(f"[SmartRecommend] 获取 Emby 分类失败: {e}")
+                categories = []
+            
+            # 如果没有分类，使用默认分类
+            if not categories:
+                logger.info("[SmartRecommend] Emby 未返回分类，使用默认分类")
+                categories = [{"name": cat, "type": "unknown"} for cat in ["国产剧", "韩剧", "欧美剧", "日剧", "欧美电影", "华语电影", "日韩电影", "动画电影", "国漫", "日漫", "欧美动漫", "儿童动漫", "综艺", "纪录片", "未分类"]]
+            
+            # ==================== 4. 获取热播数据 ====================
+            try:
+                trending = self._get_trending_media()
+                logger.info(f"[SmartRecommend] 获取到 {len(trending)} 条热播数据")
+            except Exception as e:
+                logger.error(f"[SmartRecommend] 获取热播数据失败: {e}")
+                trending = []
+            
+            # ==================== 5. 调用 LLM 分析 ====================
+            try:
+                recommendations = self._analyze_with_llm(watch_history, categories, trending)
+            except Exception as e:
+                logger.error(f"[SmartRecommend] LLM 分析失败: {e}")
+                # LLM 失败时返回规则匹配的备选结果
+                recommendations = self._analyze_with_llm([], categories, trending)  # 空历史，仅用热播数据
+            
+            # ==================== 6. 保存结果 ====================
+            self._recommend_cache = recommendations
+            self._last_refresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._save_config()
+            
+            # 计算总耗时
+            end_time = time.time()
+            total_time = end_time - start_time
+            
+            logger.info(f"[SmartRecommend] 推荐刷新完成: {len(recommendations)}个分类, {sum(len(v) for v in recommendations.values())}条推荐, 耗时{total_time:.1f}秒")
+            
+        except Exception as e:
+            # 总异常处理
+            logger.error(f"[SmartRecommend] 刷新推荐过程发生未捕获异常: {e}", exc_info=True)
+            end_time = time.time()
+            total_time = end_time - start_time
+            logger.error(f"[SmartRecommend] 刷新失败，总耗时{total_time:.1f}秒")
+            
+            # 简单检查是否超时（假设超过 180 秒为超时）
+            if total_time > 180:
+                logger.error(f"[SmartRecommend] ⚠️ 刷新操作耗时超过180秒，可能是TMDB API限流或LLM API响应缓慢")
+                logger.error(f"[SmartRecommend] ⚠️ 建议：检查网络连接，降低推荐数量，或等待API恢复")
         
-        # 2. 获取观看历史
-        watch_history = self._get_watch_history()
-        logger.info(f"[SmartRecommend] 获取到 {len(watch_history)} 条观看记录")
-        
-        # 3. 获取 Emby 分类
-        categories = self._get_emby_categories()
-        logger.info(f"[SmartRecommend] 获取到 {len(categories)} 个分类")
-        
-        # 4. 获取热播数据
-        trending = self._get_trending_media()
-        logger.info(f"[SmartRecommend] 获取到 {len(trending)} 条热播数据")
-        
-        # 5. 调用 LLM 分析
-        recommendations = self._analyze_with_llm(watch_history, categories, trending)
-        
-        # 6. 保存结果
-        self._recommend_cache = recommendations
-        self._last_refresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._save_config()
-        
-        logger.info(f"[SmartRecommend] 推荐刷新完成，共 {sum(len(v) for v in recommendations.values())} 条推荐")
+        finally:
+            # 确保取消任何可能的超时设置
+            try:
+                import signal
+                signal.alarm(0)  # 取消超时
+            except:
+                pass
 
     def _get_emby_categories(self) -> List[dict]:
         """获取 Emby 媒体库分类"""
@@ -824,11 +875,31 @@ class SmartRecommend(_PluginBase):
                 resp.raise_for_status()
                 data = resp.json()
                 
-                for item in data.get("results", [])[:15]:  # 减少数量，避免 API 调用过多
+                for item in data.get("results", [])[:8]:  # 减少数量，避免 API 调用过多，从15减到8
                     tmdb_id = item.get("id")
                     
-                    # 获取详细信息（包含播出状态）
-                    detail = self._get_tmdb_detail(tmdb_id, media_type, tmdb_api_key)
+                    # 获取详细信息（包含播出状态）- 注意：这会调用详情 API
+                    # 但如果已有缓存或状态可用，就跳过详细调用
+                    detail = {}
+                    
+                    # 首先检查是否有可用的状态信息
+                    status_from_cache = None
+                    cache_key = f"{tmdb_id}_{media_type}"
+                    if cache_key in self._media_status_cache:
+                        cache_data = self._media_status_cache[cache_key]
+                        status_from_cache = cache_data.get("status")
+                    
+                    # 只有在需要时才调用详情 API
+                    if status_from_cache:
+                        # 使用缓存的状态
+                        detail["status"] = status_from_cache
+                        detail["in_production"] = False  # 默认值
+                        detail["next_episode_to_air"] = None
+                        detail["genres"] = []  # 类型信息不影响主要功能
+                        logger.debug(f"[SmartRecommend] 使用缓存状态: {item.get('title', 'N/A')} -> {status_from_cache}")
+                    else:
+                        # 获取详细信息
+                        detail = self._get_tmdb_detail(tmdb_id, media_type, tmdb_api_key)
                     
                     trending_list.append({
                         "title": item.get("title") or item.get("name", ""),
