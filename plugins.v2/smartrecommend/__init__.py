@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -63,6 +63,10 @@ class SmartRecommend(_PluginBase):
     _last_refresh: str = ""
     _cache_version: str = ""  # 缓存版本，用于检测插件更新
     
+    # 状态缓存（减少 API 调用）
+    _media_status_cache: dict = {}  # {tmdb_id: {status: str, timestamp: datetime}}
+    _status_cache_ttl: int = 86400  # 状态缓存有效期（24小时）
+    
     # API 限流保护
     _last_api_call_time: dict = {}  # 记录各 API 最后调用时间
     _api_call_count: dict = {}  # 记录各 API 调用次数
@@ -70,7 +74,7 @@ class SmartRecommend(_PluginBase):
     _api_max_calls_per_window: int = 10  # 每个窗口最大调用次数
     
     # 当前插件版本
-    CURRENT_VERSION = "1.1.1"
+    CURRENT_VERSION = "1.1.2"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -859,7 +863,29 @@ class SmartRecommend(_PluginBase):
         return {}
 
     def _get_media_status(self, item: dict) -> str:
-        """判断媒体播出状态 - 使用 TMDB 详细信息"""
+        """
+        判断媒体播出状态 - 使用 TMDB 详细信息
+        
+        状态判断优先级：
+        1. TMDB 状态映射（最高优先）
+        2. 下一集信息
+        3. 制作中状态
+        4. 上映/首播日期
+        5. 默认状态
+        """
+        # 检查缓存
+        tmdb_id = item.get("tmdb_id")
+        if tmdb_id:
+            cache_key = f"{tmdb_id}_{item.get('media_type', 'tv')}"
+            if cache_key in self._media_status_cache:
+                cache_data = self._media_status_cache[cache_key]
+                cache_time = cache_data.get("timestamp")
+                if cache_time:
+                    now = datetime.now()
+                    if (now - cache_time).total_seconds() < self._status_cache_ttl:
+                        logger.debug(f"[SmartRecommend] 状态命中缓存: {item.get('title', 'N/A')} -> {cache_data.get('status')}")
+                        return cache_data.get("status", "正在播出")
+        
         try:
             media_type = item.get("media_type", "tv")
             status = item.get("status", "")
@@ -867,41 +893,82 @@ class SmartRecommend(_PluginBase):
             next_episode = item.get("next_episode_to_air") or item.get("next_episode")
             
             if media_type == "movie":
+                # 电影状态判断逻辑
+                movie_status = item.get("status", "")
                 release_date = item.get("release_date", "")
                 if not release_date and item.get("year"):
                     release_date = f"{item.get('year')}-01-01"
                 
-                if release_date:
-                    try:
-                        release = datetime.strptime(release_date[:10], "%Y-%m-%d")
-                        now = datetime.now()
-                        if release > now:
-                            return "即将上映"
-                        else:
-                            return "已完结"
-                    except:
-                        pass
-                return "已完结"
+                # 基于电影状态判断
+                if movie_status:
+                    # TMDB 电影状态: Rumored, Planned, In Production, Post Production, Released
+                    if movie_status in ["Released", "Post Production"]:
+                        # 已发布或后期制作中，检查上映日期
+                        if release_date:
+                            try:
+                                release = datetime.strptime(release_date[:10], "%Y-%m-%d")
+                                now = datetime.now()
+                                if release > now:
+                                    return "即将上映"
+                                else:
+                                    return "已完结"
+                            except:
+                                pass
+                        return "已完结"
+                    elif movie_status in ["Rumored", "Planned"]:
+                        return "即将上映"
+                    elif movie_status == "In Production":
+                        return "正在播出"  # 电影制作中
+                else:
+                    # 没有状态信息，根据上映日期判断
+                    if release_date:
+                        try:
+                            release = datetime.strptime(release_date[:10], "%Y-%m-%d")
+                            now = datetime.now()
+                            if release > now:
+                                return "即将上映"
+                            else:
+                                return "已完结"
+                        except:
+                            pass
+                    return "已完结"
+            
             else:
-                if status == "Returning Series":
-                    return "正在播出"
-                elif status == "In Production":
-                    return "正在播出"
-                elif status == "Ended":
-                    return "已完结"
-                elif status == "Canceled":
-                    return "已完结"
-                elif status == "Pilot":
-                    return "即将上映"
-                elif status == "Planned":
-                    return "即将上映"
+                # 根据 TMDB 电视剧状态映射
+                tv_status_map = {
+                    # 正在播出的状态
+                    "Returning Series": "正在播出",
+                    "In Production": "正在播出",
+                    "Post Production": "正在播出",
+                    "Pilot": "正在播出",  # 试播集也算正在播出
+                    
+                    # 已完结的状态
+                    "Ended": "已完结",
+                    "Canceled": "已完结",
+                    
+                    # 即将上映的状态
+                    "Planned": "即将上映",
+                    "Development": "即将上映",
+                    "Script": "即将上映",
+                    "Upcoming": "即将上映",
+                    
+                    # 其他状态
+                    "Released": "已完结",  # 通常是电影状态
+                }
                 
+                # 使用状态映射
+                if status in tv_status_map:
+                    return tv_status_map[status]
+                
+                # 如果有下一集计划，肯定正在播出
                 if next_episode:
                     return "正在播出"
                 
+                # 制作中，正在播出
                 if in_production:
                     return "正在播出"
                 
+                # 根据首播日期判断
                 first_air_date = item.get("first_air_date", "")
                 if not first_air_date and item.get("year"):
                     first_air_date = f"{item.get('year')}-01-01"
@@ -910,17 +977,37 @@ class SmartRecommend(_PluginBase):
                     try:
                         first_air = datetime.strptime(first_air_date[:10], "%Y-%m-%d")
                         now = datetime.now()
+                        
+                        # 剧集超过3年（1095天）未更新，标记为已完结
                         if (now - first_air).days > 1095:
                             return "已完结"
+                        
+                        # 未来首播的剧集
                         if first_air > now:
                             return "即将上映"
+                        
+                        # 3年内（还在热度窗口）且没完结
+                        return "正在播出"
                     except:
                         pass
                 
-                return "正在播出"
+                # 默认返回正在播出（对观众最友好）
+                result_status = "正在播出"
+        
         except Exception as e:
             logger.debug(f"[SmartRecommend] 获取播出状态失败：{e}")
-            return "正在播出"
+            result_status = "正在播出"
+        
+        # 保存到缓存（包括异常后的默认状态）
+        if tmdb_id:
+            cache_key = f"{tmdb_id}_{item.get('media_type', 'tv')}"
+            self._media_status_cache[cache_key] = {
+                "status": result_status,
+                "timestamp": datetime.now()
+            }
+            logger.debug(f"[SmartRecommend] 状态保存到缓存: {item.get('title', 'N/A')} -> {result_status}")
+        
+        return result_status
 
     def _match_emby_category(self, item: dict, emby_categories: List[dict]) -> str:
         """根据媒体信息匹配 Emby 分类"""
