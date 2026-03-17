@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -61,6 +61,10 @@ class SmartRecommend(_PluginBase):
     # 缓存
     _recommend_cache: dict = {}
     _last_refresh: str = ""
+    _cache_version: str = ""  # 缓存版本，用于检测插件更新
+    
+    # 当前插件版本
+    CURRENT_VERSION = "1.0.6"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -90,6 +94,19 @@ class SmartRecommend(_PluginBase):
             self._refresh_cron = config.get("refresh_cron", "0 8 * * *")
             self._recommend_cache = config.get("recommend_cache", {})
             self._last_refresh = config.get("last_refresh", "")
+            self._cache_version = config.get("cache_version", "")
+            
+            # 检测版本变化，自动清除缓存
+            if self._cache_version != self.CURRENT_VERSION:
+                logger.info(f"[SmartRecommend] 检测到插件版本更新 ({self._cache_version} -> {self.CURRENT_VERSION})，清除缓存")
+                self._recommend_cache = {}
+                self._last_refresh = ""
+                self._cache_version = self.CURRENT_VERSION
+                self._save_config()
+                
+                # 版本更新后自动刷新一次
+                if self._enabled:
+                    self._onlyonce = True
 
         # 立即运行一次
         if self._onlyonce:
@@ -1200,5 +1217,6 @@ class SmartRecommend(_PluginBase):
             "auto_refresh": self._auto_refresh,
             "refresh_cron": self._refresh_cron,
             "recommend_cache": self._recommend_cache,
-            "last_refresh": self._last_refresh
+            "last_refresh": self._last_refresh,
+            "cache_version": self._cache_version
         })
