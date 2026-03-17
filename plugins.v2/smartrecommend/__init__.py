@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.1"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -63,8 +63,14 @@ class SmartRecommend(_PluginBase):
     _last_refresh: str = ""
     _cache_version: str = ""  # 缓存版本，用于检测插件更新
     
+    # API 限流保护
+    _last_api_call_time: dict = {}  # 记录各 API 最后调用时间
+    _api_call_count: dict = {}  # 记录各 API 调用次数
+    _api_rate_limit_window: int = 60  # 限流窗口（秒）
+    _api_max_calls_per_window: int = 10  # 每个窗口最大调用次数
+    
     # 当前插件版本
-    CURRENT_VERSION = "1.1.0"
+    CURRENT_VERSION = "1.1.1"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -75,6 +81,66 @@ class SmartRecommend(_PluginBase):
         if not url.startswith(('http://', 'https://')):
             url = f"http://{url}"
         return url.rstrip('/')
+
+    def _check_rate_limit(self, api_name: str) -> bool:
+        """
+        检查 API 是否超过限流
+        :param api_name: API 名称标识
+        :return: True 表示可以调用，False 表示被限流
+        """
+        now = datetime.now()
+        
+        # 初始化该 API 的调用记录
+        if api_name not in self._last_api_call_time:
+            self._last_api_call_time[api_name] = now
+            self._api_call_count[api_name] = 0
+        
+        last_call = self._last_api_call_time[api_name]
+        time_diff = (now - last_call).total_seconds()
+        
+        # 如果超过窗口期，重置计数
+        if time_diff > self._api_rate_limit_window:
+            self._api_call_count[api_name] = 0
+            self._last_api_call_time[api_name] = now
+        
+        # 检查是否超过限制
+        if self._api_call_count[api_name] >= self._api_max_calls_per_window:
+            logger.warning(f"[SmartRecommend] API '{api_name}' 超过限流 ({self._api_max_calls_per_window}次/{self._api_rate_limit_window}秒)")
+            return False
+        
+        # 增加调用计数
+        self._api_call_count[api_name] += 1
+        return True
+
+    def _make_api_request(self, method: str, url: str, api_name: str, **kwargs) -> Optional[requests.Response]:
+        """
+        带限流保护的 API 请求
+        :param method: HTTP 方法 (get/post/put/delete)
+        :param url: 请求 URL
+        :param api_name: API 名称（用于限流统计）
+        :param kwargs: 其他 requests 参数
+        :return: Response 对象或 None
+        """
+        # 检查限流
+        if not self._check_rate_limit(api_name):
+            logger.error(f"[SmartRecommend] API '{api_name}' 请求被限流，请稍后重试")
+            return None
+        
+        try:
+            # 添加默认超时
+            if 'timeout' not in kwargs:
+                kwargs['timeout'] = 30
+            
+            # 执行请求
+            resp = getattr(requests, method.lower())(url, **kwargs)
+            return resp
+            
+        except requests.exceptions.Timeout:
+            logger.error(f"[SmartRecommend] API '{api_name}' 请求超时")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[SmartRecommend] API '{api_name}' 请求失败: {e}")
+            return None
 
     def init_plugin(self, config: dict = None):
         """初始化插件"""
@@ -658,7 +724,9 @@ class SmartRecommend(_PluginBase):
             user_id = self._emby_user_id
             if not user_id:
                 users_url = f"{emby_url}/emby/Users?api_key={self._emby_api_key}"
-                resp = requests.get(users_url, timeout=10)
+                resp = self._make_api_request("get", users_url, "emby_users")
+                if not resp:
+                    return []
                 resp.raise_for_status()
                 users = resp.json()
                 if users:
@@ -666,7 +734,9 @@ class SmartRecommend(_PluginBase):
             
             # 获取媒体库视图
             views_url = f"{emby_url}/emby/Users/{user_id}/Views?api_key={self._emby_api_key}"
-            resp = requests.get(views_url, timeout=10)
+            resp = self._make_api_request("get", views_url, "emby_views")
+            if not resp:
+                return []
             resp.raise_for_status()
             data = resp.json()
             
@@ -703,7 +773,9 @@ class SmartRecommend(_PluginBase):
             
             # 获取最近播放的项目
             items_url = f"{emby_url}/emby/Users/{user_id}/Items?api_key={self._emby_api_key}&SortBy=DatePlayed&SortOrder=Descending&Limit={limit}&Recursive=true&Fields=Name,Type,Genres,CommunityRating,ProductionYear,PlayCount,DateCreated"
-            resp = requests.get(items_url, timeout=30)
+            resp = self._make_api_request("get", items_url, "emby_history")
+            if not resp:
+                return []
             resp.raise_for_status()
             data = resp.json()
             
@@ -734,7 +806,9 @@ class SmartRecommend(_PluginBase):
             # 获取热播电影和电视剧
             for media_type in ["movie", "tv"]:
                 url = f"https://api.themoviedb.org/3/trending/{media_type}/week?api_key={tmdb_api_key}&language=zh-CN"
-                resp = requests.get(url, timeout=10)
+                resp = self._make_api_request("get", url, "tmdb_trending")
+                if not resp:
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
                 
@@ -770,8 +844,8 @@ class SmartRecommend(_PluginBase):
         """获取 TMDB 详情信息"""
         try:
             url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={api_key}&language=zh-CN"
-            resp = requests.get(url, timeout=5)
-            if resp.ok:
+            resp = self._make_api_request("get", url, "tmdb_detail")
+            if resp and resp.ok:
                 data = resp.json()
                 genres = [g.get("name", "") for g in data.get("genres", [])]
                 return {
@@ -1097,12 +1171,10 @@ class SmartRecommend(_PluginBase):
                 "max_tokens": 4000
             }
             
-            resp = requests.post(
-                f"{self._llm_base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=60
-            )
+            resp = self._make_api_request("post", f"{self._llm_base_url.rstrip('/')}/chat/completions", "llm", headers=headers, json=data, timeout=60)
+            if not resp:
+                logger.error("[SmartRecommend] LLM API 调用被限流或失败，使用规则匹配结果作为备选")
+                return categorized_trending
             resp.raise_for_status()
             result = resp.json()
             
