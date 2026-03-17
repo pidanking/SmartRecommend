@@ -1,0 +1,14 @@
+{
+  "SmartRecommend": {
+    "name": "AI智能推荐",
+    "description": "基于 Emby 观看历史和热播数据，使用 AI 生成个性化推荐。支持 LLM 配置、观看分析、热播获取、一键订阅。",
+    "version": "1.0.0",
+    "v2": true,
+    "icon": "https://raw.githubusercontent.com/pidanking/SmartRecommend/main/icons/smartrecommend.svg",
+    "author": "pidanking",
+    "level": 1,
+    "history": {
+      "v1.0.0": "初始版本：LLM 配置、Emby 观看分析、TMDB 热播获取、AI 推荐、仪表盘展示、一键订阅"
+    }
+  }
+}
