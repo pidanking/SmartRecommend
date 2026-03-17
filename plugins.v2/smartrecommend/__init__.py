@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -892,8 +892,19 @@ class SmartRecommend(_PluginBase):
             },
             "纪录片": {
                 "genres": ["纪录", "Documentary"]
+            },
+            "儿童动漫": {
+                "keywords": ["儿童", "kids", "children", "少儿"],
+                "genres": ["动画", "Animation", "Anime", "Family"]
+            },
+            "未分类": {
+                # 默认分类，不需要特殊规则
             }
         }
+        
+        # 排除的分类
+        excluded_categories = ["食贫道", "演唱会", "其他动漫"]
+        category_names = [c for c in category_names if c not in excluded_categories]
         
         # 检查标题和原标题关键词
         full_text = f"{title} {original_title}"
@@ -958,10 +969,24 @@ class SmartRecommend(_PluginBase):
     def _analyze_with_llm(self, watch_history: List[dict], categories: List[dict], trending: List[dict]) -> dict:
         """使用 LLM 分析并生成推荐，按 Emby 分类 + 播出状态划分"""
         
-        # 构建分类列表
-        category_names = [c["name"] for c in categories if c.get("name")]
+        # 构建分类列表，排除特定分类
+        excluded_categories = ["食贫道", "演唱会", "其他动漫"]
+        category_names = [c["name"] for c in categories if c.get("name") and c["name"] not in excluded_categories]
         
-        # 先对热播内容进行分类和状态分组
+        # 默认分类列表（如果 Emby 分类获取失败）
+        default_categories = [
+            "国产剧", "韩剧", "欧美剧", "日剧",
+            "欧美电影", "华语电影", "日韩电影", "动画电影",
+            "国漫", "日漫", "欧美动漫", "儿童动漫",
+            "综艺", "纪录片"
+        ]
+        
+        # 如果没有获取到 Emby 分类，使用默认分类
+        if not category_names:
+            category_names = default_categories
+            logger.warning("[SmartRecommend] 未获取到 Emby 分类，使用默认分类列表")
+        
+        # 先对热播内容进行分类和状态分组，强制初始化所有分类
         categorized_trending = {}
         for cat in category_names:
             categorized_trending[cat] = {"正在播出": [], "即将上映": [], "已完结": []}
@@ -973,8 +998,9 @@ class SmartRecommend(_PluginBase):
             # 匹配 Emby 分类
             category = self._match_emby_category(t, categories)
             
+            # 确保分类在列表中
             if category not in categorized_trending:
-                category = category_names[0] if category_names else "推荐"
+                category = category_names[0] if category_names else "国产剧"
             
             # 按状态分组
             if status in ["正在播出", "正在更新"]:
@@ -999,8 +1025,10 @@ class SmartRecommend(_PluginBase):
 ## 推荐要求
 1. 必须使用上面列出的 Emby 媒体库分类名称，不要创造新分类
 2. 每个分类下按三种播出状态组织：正在播出、即将上映、已完结
-3. 每个状态下推荐 1-5 部作品，优先选择符合用户观看偏好的内容
-4. 返回严格的 JSON 格式：
+3. 每个状态下推荐恰好 5 部作品
+4. 如果某个状态没有热播内容，可以根据用户偏好推荐其他相似作品
+5. 优先选择符合用户观看偏好的内容
+6. 返回严格的 JSON 格式，必须包含所有分类：
 
 ```json
 {{
@@ -1011,11 +1039,12 @@ class SmartRecommend(_PluginBase):
     "即将上映": [...],
     "已完结": [...]
   }},
-  "日漫": {{
+  "韩剧": {{
     "正在播出": [...],
     "即将上映": [...],
     "已完结": [...]
-  }}
+  }},
+  ... (必须包含所有分类)
 }}
 ```
 
