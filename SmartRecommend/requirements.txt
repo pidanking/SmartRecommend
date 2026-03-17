@@ -1,0 +1,4 @@
+# SmartRecommend 依赖
+# MoviePilot 已包含大部分依赖，如需额外依赖请在此添加
+
+requests>=2.28.0
