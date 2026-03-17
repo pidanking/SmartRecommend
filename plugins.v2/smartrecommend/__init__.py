@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.8"
+    plugin_version = "1.0.9"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -64,7 +64,7 @@ class SmartRecommend(_PluginBase):
     _cache_version: str = ""  # 缓存版本，用于检测插件更新
     
     # 当前插件版本
-    CURRENT_VERSION = "1.0.8"
+    CURRENT_VERSION = "1.0.9"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
