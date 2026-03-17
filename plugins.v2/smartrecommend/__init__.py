@@ -343,7 +343,7 @@ class SmartRecommend(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """仪表盘页面"""
+        """仪表盘页面 - 按 Emby 分类 + 播出状态展示"""
         recommendations = self._recommend_cache or {}
         categories = self._get_emby_categories()
         
@@ -384,93 +384,53 @@ class SmartRecommend(_PluginBase):
                 }
             ]
         
-        # 构建推荐卡片
+        # 构建推荐卡片 - 按分类+状态展示
         cards = []
-        for category, items in recommendations.items():
-            if not items:
+        
+        for category, status_data in recommendations.items():
+            if not status_data or not isinstance(status_data, dict):
                 continue
-            card_content = [
+            
+            # 分类标题
+            category_header = [
                 {
                     "component": "div",
-                    "props": {"class": "text-h6 mb-3"},
+                    "props": {"class": "d-flex align-center mb-2"},
                     "content": [
-                        {"component": "VIcon", "props": {"start": True, "color": "primary"}, "icon": self._get_category_icon(category)},
-                        {"component": "span", "text": f" {category}"}
+                        {"component": "VIcon", "props": {"start": True, "color": "primary", "size": "large"}, "icon": self._get_category_icon(category)},
+                        {"component": "span", "props": {"class": "text-h5 ml-2"}, "text": category}
                     ]
                 }
             ]
             
-            for item in items[:self._recommend_count]:
-                card_content.append({
-                    "component": "div",
-                    "props": {"class": "d-flex align-center py-2 border-b"},
-                    "content": [
-                        {
-                            "component": "VAvatar",
-                            "props": {"size": 60, "rounded": True, "class": "me-3"},
-                            "content": [
-                                {
-                                    "component": "VImg",
-                                    "props": {
-                                        "src": item.get("poster", ""),
-                                        "cover": True
-                                    }
-                                } if item.get("poster") else {
-                                    "component": "VIcon",
-                                    "props": {"size": 32, "color": "grey"},
-                                    "icon": "mdi-movie"
-                                }
-                            ]
-                        },
-                        {
-                            "component": "div",
-                            "props": {"class": "flex-grow-1"},
-                            "content": [
-                                {
-                                    "component": "div",
-                                    "props": {"class": "text-subtitle-1 font-weight-medium"},
-                                    "text": item.get("title", "未知")
-                                },
-                                {
-                                    "component": "div",
-                                    "props": {"class": "text-caption text-grey"},
-                                    "content": [
-                                        {"component": "span", "text": f"{item.get('year', '')} · {item.get('type', '')}"},
-                                        {"component": "span", "props": {"class": "mx-1"}, "text": "·"},
-                                        {"component": "span", "text": f"评分: {item.get('rating', '-')}"}
-                                    ] if item.get('year') else []
-                                }
-                            ]
-                        },
-                        {
-                            "component": "VBtn",
-                            "props": {"size": "small", "color": "primary", "variant": "text"},
-                            "content": [{"component": "VIcon", "icon": "mdi-plus"}],
-                            "events": {
-                                "click": {
-                                    "type": "request",
-                                    "path": f"/api/v1/subscribe/",
-                                    "method": "POST",
-                                    "data": {
-                                        "name": item.get("title"),
-                                        "tmdbid": item.get("tmdb_id"),
-                                        "type": item.get("type")
-                                    }
-                                }
-                            }
-                        }
-                    ]
-                })
+            # 按状态展示
+            status_sections = []
+            
+            # 正在播出
+            if status_data.get("正在播出"):
+                status_sections.append(self._build_status_section("正在播出", "mdi-play-circle", "success", status_data["正在播出"]))
+            
+            # 即将上映
+            if status_data.get("即将上映"):
+                status_sections.append(self._build_status_section("即将上映", "mdi-clock-outline", "warning", status_data["即将上映"]))
+            
+            # 已完结
+            if status_data.get("已完结"):
+                status_sections.append(self._build_status_section("已完结", "mdi-check-circle", "info", status_data["已完结"]))
+            
+            if not status_sections:
+                continue
             
             cards.append({
                 "component": "VCol",
-                "props": {"cols": 12, "md": 6, "lg": 4},
+                "props": {"cols": 12},
                 "content": [
                     {
                         "component": "VCard",
-                        "props": {"variant": "outlined"},
+                        "props": {"variant": "outlined", "class": "mb-4"},
                         "content": [
-                            {"component": "VCardText", "content": card_content}
+                            {"component": "VCardTitle", "content": category_header},
+                            {"component": "VCardText", "content": status_sections}
                         ]
                     }
                 ]
@@ -509,6 +469,82 @@ class SmartRecommend(_PluginBase):
         ]
         
         return [{"component": "VRow", "content": header + cards}]
+
+    def _build_status_section(self, status: str, icon: str, color: str, items: List[dict]) -> dict:
+        """构建状态分组的展示区域"""
+        content = [
+            {
+                "component": "div",
+                "props": {"class": "d-flex align-center mb-2"},
+                "content": [
+                    {"component": "VIcon", "props": {"start": True, "color": color, "size": "small"}, "icon": icon},
+                    {"component": "span", "props": {"class": "text-subtitle-1 font-weight-medium ml-1"}, "text": status},
+                    {"component": "VChip", "props": {"size": "x-small", "class": "ml-2"}, "text": str(len(items))}
+                ]
+            }
+        ]
+        
+        for item in items[:self._recommend_count]:
+            content.append({
+                "component": "div",
+                "props": {"class": "d-flex align-center py-2 border-b"},
+                "content": [
+                    {
+                        "component": "VAvatar",
+                        "props": {"size": 50, "rounded": True, "class": "me-3"},
+                        "content": [
+                            {
+                                "component": "VImg",
+                                "props": {"src": item.get("poster", ""), "cover": True}
+                            } if item.get("poster") else {
+                                "component": "VIcon",
+                                "props": {"size": 24, "color": "grey"},
+                                "icon": "mdi-movie"
+                            }
+                        ]
+                    },
+                    {
+                        "component": "div",
+                        "props": {"class": "flex-grow-1"},
+                        "content": [
+                            {
+                                "component": "div",
+                                "props": {"class": "text-subtitle-2 font-weight-medium"},
+                                "text": item.get("title", "未知")
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-caption text-grey"},
+                                "text": f"{item.get('year', '')} · {item.get('type', '')} · 评分 {item.get('rating', '-')}" if item.get('year') else f"评分 {item.get('rating', '-')}"
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-caption text-grey-lighten-1"},
+                                "text": item.get("reason", "")[:50] + "..." if item.get("reason") and len(item.get("reason", "")) > 50 else (item.get("reason", ""))
+                            } if item.get("reason") else None
+                        ]
+                    },
+                    {
+                        "component": "VBtn",
+                        "props": {"size": "x-small", "color": "primary", "variant": "text"},
+                        "content": [{"component": "VIcon", "icon": "mdi-plus"}],
+                        "events": {
+                            "click": {
+                                "type": "request",
+                                "path": "/api/v1/subscribe/",
+                                "method": "POST",
+                                "data": {
+                                    "name": item.get("title"),
+                                    "tmdbid": item.get("tmdb_id"),
+                                    "type": item.get("type")
+                                }
+                            }
+                        }
+                    }
+                ]
+            })
+        
+        return {"component": "div", "props": {"class": "mb-4"}, "content": content}
 
     def stop_service(self):
         """停止服务"""
@@ -701,42 +737,109 @@ class SmartRecommend(_PluginBase):
         
         return trending_list
 
+    def _get_media_status(self, item: dict, media_type: str) -> str:
+        """判断媒体播出状态"""
+        try:
+            if media_type == "movie":
+                # 电影：根据上映日期判断
+                release_date = item.get("release_date", "")
+                if release_date:
+                    release = datetime.strptime(release_date, "%Y-%m-%d")
+                    now = datetime.now()
+                    if release > now:
+                        return "即将上映"
+                    else:
+                        return "已上映"
+                return "未知"
+            else:
+                # 电视剧：根据状态判断
+                status = item.get("status", "")
+                if status == "Returning Series":
+                    return "正在播出"
+                elif status == "Ended":
+                    return "已完结"
+                elif status == "Canceled":
+                    return "已取消"
+                
+                # 根据日期判断
+                first_air_date = item.get("first_air_date", "")
+                if first_air_date:
+                    first_air = datetime.strptime(first_air_date, "%Y-%m-%d")
+                    now = datetime.now()
+                    if first_air > now:
+                        return "即将播出"
+                return "正在播出"
+        except Exception:
+            return "未知"
+
     def _analyze_with_llm(self, watch_history: List[dict], categories: List[dict], trending: List[dict]) -> dict:
-        """使用 LLM 分析并生成推荐"""
+        """使用 LLM 分析并生成推荐，按 Emby 分类 + 播出状态划分"""
         
         # 构建分类列表
         category_names = [c["name"] for c in categories if c.get("name")]
         
+        # 按播出状态分组热播内容
+        now_airing = []
+        coming_soon = []
+        finished = []
+        
+        for t in trending:
+            status = self._get_media_status(t, t.get("media_type", "tv"))
+            if status in ["正在播出", "正在更新"]:
+                now_airing.append(t)
+            elif status in ["即将上映", "即将播出"]:
+                coming_soon.append(t)
+            else:
+                finished.append(t)
+        
         # 构建提示词
-        prompt = f"""你是一个专业的影视推荐专家。根据用户的观看历史和当前热播内容，为用户推荐最合适的影视作品。
+        prompt = f"""你是一个专业的影视推荐专家。根据用户的观看历史，为用户推荐最合适的影视作品。
 
 ## 用户观看历史 (最近{len(watch_history)}部)
 {self._format_watch_history(watch_history[:50])}
 
-## 媒体库分类
-{', '.join(category_names)}
+## Emby 媒体库分类（必须使用这些分类名称）
+{chr(10).join(f'- {cat}' for cat in category_names)}
 
-## 当前热播内容 (前20部)
-{self._format_trending(trending[:20])}
+## 当前热播内容
+
+### 正在播出 ({len(now_airing)}部)
+{self._format_trending(now_airing[:15])}
+
+### 即将上映 ({len(coming_soon)}部)
+{self._format_trending(coming_soon[:10])}
+
+### 已完结/已上映 ({len(finished)}部)
+{self._format_trending(finished[:15])}
 
 ## 推荐要求
-1. 根据用户的观看偏好，从热播内容中挑选推荐
-2. 每个分类推荐 {self._recommend_count} 部作品
-3. 优先推荐评分高、符合用户口味的内容
-4. 特别关注动漫/番剧分类
-5. 返回 JSON 格式，结构如下：
+1. 必须使用上面列出的 Emby 媒体库分类名称，不要创造新分类
+2. 每个分类下必须按三种播出状态组织：
+   - "正在播出": 当前正在更新/播出的内容
+   - "即将上映": 还未上映/播出的内容  
+   - "已完结": 已完结或已上映的内容
+3. 每个状态下推荐 1-3 部作品
+4. 优先推荐符合用户观看偏好的内容
+5. 返回严格的 JSON 格式：
 
 ```json
 {{
-  "国产剧": [
-    {{"title": "剧名", "year": 2024, "rating": 8.5, "reason": "推荐理由", "tmdb_id": 12345}}
-  ],
-  "日漫": [...],
-  ...
+  "国产剧": {{
+    "正在播出": [
+      {{"title": "剧名", "year": 2024, "rating": 8.5, "reason": "推荐理由", "tmdb_id": 12345, "type": "电视剧"}}
+    ],
+    "即将上映": [...],
+    "已完结": [...]
+  }},
+  "日漫": {{
+    "正在播出": [...],
+    "即将上映": [...],
+    "已完结": [...]
+  }}
 }}
 ```
 
-只返回 JSON，不要其他内容。"""
+只返回 JSON，不要其他内容。确保分类名称与 Emby 媒体库分类完全一致。"""
 
         try:
             # 调用 LLM
@@ -774,15 +877,21 @@ class SmartRecommend(_PluginBase):
             
             recommendations = json.loads(content)
             
-            # 补充 poster 等信息
-            for category, items in recommendations.items():
-                for item in items:
-                    # 从热播数据中查找 poster
-                    for t in trending:
-                        if t.get("title") == item.get("title") or t.get("tmdb_id") == item.get("tmdb_id"):
-                            item["poster"] = t.get("poster")
-                            item["type"] = t.get("type")
-                            break
+            # 补充 poster 等信息 - 新版嵌套结构
+            for category, status_data in recommendations.items():
+                if not isinstance(status_data, dict):
+                    continue
+                for status, items in status_data.items():
+                    if not isinstance(items, list):
+                        continue
+                    for item in items:
+                        # 从热播数据中查找 poster
+                        for t in trending:
+                            if t.get("title") == item.get("title") or t.get("tmdb_id") == item.get("tmdb_id"):
+                                item["poster"] = t.get("poster")
+                                if not item.get("type"):
+                                    item["type"] = t.get("type")
+                                break
             
             return recommendations
             
