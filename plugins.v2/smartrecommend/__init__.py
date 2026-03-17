@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.7"
+    plugin_version = "1.0.8"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -64,7 +64,7 @@ class SmartRecommend(_PluginBase):
     _cache_version: str = ""  # 缓存版本，用于检测插件更新
     
     # 当前插件版本
-    CURRENT_VERSION = "1.0.7"
+    CURRENT_VERSION = "1.0.8"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -790,35 +790,44 @@ class SmartRecommend(_PluginBase):
             media_type = item.get("media_type", "tv")
             status = item.get("status", "")
             in_production = item.get("in_production", False)
-            next_episode = item.get("next_episode")
+            next_episode = item.get("next_episode_to_air") or item.get("next_episode")
             
             if media_type == "movie":
-                # 电影：根据上映日期判断
-                release_date = item.get("release_date", "") or item.get("year")
+                release_date = item.get("release_date", "")
+                if not release_date and item.get("year"):
+                    release_date = f"{item.get('year')}-01-01"
+                
                 if release_date:
-                    if isinstance(release_date, str) and len(release_date) >= 4:
-                        year = int(release_date[:4]) if release_date[:4].isdigit() else None
-                        if year:
-                            now_year = datetime.now().year
-                            if year > now_year:
-                                return "即将上映"
-                            else:
-                                return "已上映"
-                return "已上映"
+                    try:
+                        release = datetime.strptime(release_date[:10], "%Y-%m-%d")
+                        now = datetime.now()
+                        if release > now:
+                            return "即将上映"
+                        else:
+                            return "已完结"
+                    except:
+                        pass
+                return "已完结"
             else:
-                # 电视剧：优先使用 status 字段
-                if status == "Returning Series" or in_production:
+                if status == "Returning Series":
+                    return "正在播出"
+                elif status == "In Production":
                     return "正在播出"
                 elif status == "Ended":
                     return "已完结"
                 elif status == "Canceled":
-                    return "已取消"
+                    return "已完结"
+                elif status == "Pilot":
+                    return "即将上映"
+                elif status == "Planned":
+                    return "即将上映"
                 
-                # 有下一集 = 正在播出
                 if next_episode:
                     return "正在播出"
                 
-                # 根据日期判断
+                if in_production:
+                    return "正在播出"
+                
                 first_air_date = item.get("first_air_date", "")
                 if not first_air_date and item.get("year"):
                     first_air_date = f"{item.get('year')}-01-01"
@@ -827,16 +836,17 @@ class SmartRecommend(_PluginBase):
                     try:
                         first_air = datetime.strptime(first_air_date[:10], "%Y-%m-%d")
                         now = datetime.now()
+                        if (now - first_air).days > 1095:
+                            return "已完结"
                         if first_air > now:
-                            return "即将播出"
+                            return "即将上映"
                     except:
                         pass
                 
-                # 默认返回正在播出（热门内容）
                 return "正在播出"
         except Exception as e:
-            logger.debug(f"[SmartRecommend] 获取播出状态失败: {e}")
-            return "未知"
+            logger.debug(f"[SmartRecommend] 获取播出状态失败：{e}")
+            return "正在播出"
 
     def _match_emby_category(self, item: dict, emby_categories: List[dict]) -> str:
         """根据媒体信息匹配 Emby 分类"""
@@ -989,20 +999,22 @@ class SmartRecommend(_PluginBase):
         
         # 构建分类列表，排除特定分类
         excluded_categories = ["食贫道", "演唱会", "其他动漫"]
-        category_names = [c["name"] for c in categories if c.get("name") and c["name"] not in excluded_categories]
+        emby_category_names = [c["name"] for c in categories if c.get("name") and c["name"] not in excluded_categories]
         
-        # 默认分类列表（如果 Emby 分类获取失败）
+        # 默认分类列表（完整 15 个分类）
         default_categories = [
             "国产剧", "韩剧", "欧美剧", "日剧",
             "欧美电影", "华语电影", "日韩电影", "动画电影",
             "国漫", "日漫", "欧美动漫", "儿童动漫",
-            "综艺", "纪录片"
+            "综艺", "纪录片", "未分类"
         ]
         
-        # 如果没有获取到 Emby 分类，使用默认分类
-        if not category_names:
-            category_names = default_categories
-            logger.warning("[SmartRecommend] 未获取到 Emby 分类，使用默认分类列表")
+        # 合并 Emby 分类和默认分类，确保完整性
+        category_names = list(dict.fromkeys(emby_category_names + default_categories))
+        # 移除排除的分类
+        category_names = [c for c in category_names if c not in excluded_categories]
+        
+        logger.info(f"[SmartRecommend] 使用分类列表 ({len(category_names)}个): {category_names}")
         
         # 先对热播内容进行分类和状态分组，强制初始化所有分类
         categorized_trending = {}
@@ -1103,36 +1115,58 @@ class SmartRecommend(_PluginBase):
             
             recommendations = json.loads(content)
             
-            # 验证分类名称
+            # 验证分类名称并构建结果
             valid_recommendations = {}
             for category, status_data in recommendations.items():
-                # 只接受 Emby 中存在的分类
                 if category in category_names and isinstance(status_data, dict):
                     valid_recommendations[category] = {}
                     for status, items in status_data.items():
                         if status in ["正在播出", "即将上映", "已完结"] and isinstance(items, list):
                             valid_recommendations[category][status] = items
             
-            # 补充 poster 等信息
+            # 补充 poster 等信息 - 改进匹配逻辑
             for category, status_data in valid_recommendations.items():
                 for status, items in status_data.items():
                     for item in items:
-                        # 从热播数据中查找 poster
+                        item_title = item.get("title", "").lower().strip()
+                        item_tmdb_id = item.get("tmdb_id")
+                        
+                        # 从热播数据中查找 poster - 改进匹配
                         for t in trending:
-                            title_match = (t.get("title", "").lower() == item.get("title", "").lower() or
-                                         t.get("original_title", "").lower() == item.get("title", "").lower())
-                            id_match = t.get("tmdb_id") == item.get("tmdb_id")
-                            if title_match or id_match:
+                            t_title = t.get("title", "").lower().strip()
+                            t_original = t.get("original_title", "").lower().strip()
+                            t_tmdb_id = t.get("tmdb_id")
+                            
+                            # 多重匹配：标题完全匹配、原标题匹配、TMDB ID 匹配
+                            title_match = t_title == item_title
+                            original_match = t_original == item_title
+                            id_match = t_tmdb_id is not None and t_tmdb_id == item_tmdb_id
+                            
+                            if title_match or original_match or id_match:
                                 item["poster"] = t.get("poster")
                                 if not item.get("type"):
                                     item["type"] = t.get("type")
+                                if not item.get("year"):
+                                    item["year"] = t.get("year")
+                                if not item.get("rating"):
+                                    item["rating"] = t.get("rating")
                                 break
             
-            # 补充空分类（使用规则匹配的结果）
+            # 补充空分类 - 确保所有分类都显示
             for category in category_names:
                 if category not in valid_recommendations:
+                    # 使用规则匹配的结果填充
                     if category in categorized_trending:
                         valid_recommendations[category] = categorized_trending[category]
+                    else:
+                        # 初始化为空结构
+                        valid_recommendations[category] = {"正在播出": [], "即将上映": [], "已完结": []}
+            
+            # 补充每个分类下的空状态
+            for category, status_data in valid_recommendations.items():
+                for status in ["正在播出", "即将上映", "已完结"]:
+                    if status not in status_data:
+                        status_data[status] = []
             
             return valid_recommendations
             
