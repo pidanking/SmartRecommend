@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -74,7 +74,7 @@ class SmartRecommend(_PluginBase):
     _api_max_calls_per_window: int = 10  # 每个窗口最大调用次数
     
     # 当前插件版本
-    CURRENT_VERSION = "1.2.0"
+    CURRENT_VERSION = "1.2.1"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -632,7 +632,7 @@ class SmartRecommend(_PluginBase):
                                 "data": {
                                     "name": item.get("title"),
                                     "tmdbid": item.get("tmdb_id"),
-                                    "type": item.get("type")
+                                    "type": "movie" if item.get("type") == "电影" or item.get("media_type") == "movie" else "tv"
                                 }
                             }
                         }
