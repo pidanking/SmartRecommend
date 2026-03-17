@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -61,6 +61,16 @@ class SmartRecommend(_PluginBase):
     # 缓存
     _recommend_cache: dict = {}
     _last_refresh: str = ""
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """规范化 URL，确保有协议前缀"""
+        if not url:
+            return url
+        url = url.strip()
+        if not url.startswith(('http://', 'https://')):
+            url = f"http://{url}"
+        return url.rstrip('/')
 
     def init_plugin(self, config: dict = None):
         """初始化插件"""
@@ -587,10 +597,13 @@ class SmartRecommend(_PluginBase):
             return []
         
         try:
+            # 规范化 Emby URL
+            emby_url = self._normalize_url(self._emby_url)
+            
             # 获取用户 ID
             user_id = self._emby_user_id
             if not user_id:
-                users_url = f"{self._emby_url.rstrip('/')}/emby/Users?api_key={self._emby_api_key}"
+                users_url = f"{emby_url}/emby/Users?api_key={self._emby_api_key}"
                 resp = requests.get(users_url, timeout=10)
                 resp.raise_for_status()
                 users = resp.json()
@@ -598,7 +611,7 @@ class SmartRecommend(_PluginBase):
                     user_id = users[0].get("Id")
             
             # 获取媒体库视图
-            views_url = f"{self._emby_url.rstrip('/')}/emby/Users/{user_id}/Views?api_key={self._emby_api_key}"
+            views_url = f"{emby_url}/emby/Users/{user_id}/Views?api_key={self._emby_api_key}"
             resp = requests.get(views_url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
@@ -621,10 +634,13 @@ class SmartRecommend(_PluginBase):
             return []
         
         try:
+            # 规范化 Emby URL
+            emby_url = self._normalize_url(self._emby_url)
+            
             # 获取用户 ID
             user_id = self._emby_user_id
             if not user_id:
-                users_url = f"{self._emby_url.rstrip('/')}/emby/Users?api_key={self._emby_api_key}"
+                users_url = f"{emby_url}/emby/Users?api_key={self._emby_api_key}"
                 resp = requests.get(users_url, timeout=10)
                 resp.raise_for_status()
                 users = resp.json()
@@ -632,7 +648,7 @@ class SmartRecommend(_PluginBase):
                     user_id = users[0].get("Id")
             
             # 获取最近播放的项目
-            items_url = f"{self._emby_url.rstrip('/')}/emby/Users/{user_id}/Items?api_key={self._emby_api_key}&SortBy=DatePlayed&SortOrder=Descending&Limit={limit}&Recursive=true&Fields=Name,Type,Genres,CommunityRating,ProductionYear,PlayCount,DateCreated"
+            items_url = f"{emby_url}/emby/Users/{user_id}/Items?api_key={self._emby_api_key}&SortBy=DatePlayed&SortOrder=Descending&Limit={limit}&Recursive=true&Fields=Name,Type,Genres,CommunityRating,ProductionYear,PlayCount,DateCreated"
             resp = requests.get(items_url, timeout=30)
             resp.raise_for_status()
             data = resp.json()
