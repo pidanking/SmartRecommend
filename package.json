@@ -4,7 +4,7 @@
     "description": "基于 Emby 观看历史和热播数据，使用 AI 生成个性化推荐。支持 LLM 配置、观看分析、热播获取、一键订阅。",
     "version": "1.0.0",
     "v2": true,
-    "icon": "https://raw.githubusercontent.com/pidanking/SmartRecommend/main/icons/smartrecommend.svg",
+    "icon": "https://raw.githubusercontent.com/pidanking/SmartRecommend/main/icons/smartrecommend.png",
     "author": "pidanking",
     "level": 1,
     "history": {

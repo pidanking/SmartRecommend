@@ -27,7 +27,7 @@ class SmartRecommend(_PluginBase):
     # 插件基本信息
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
-    plugin_icon = "icon.svg"
+    plugin_icon = "smartrecommend.png"
     plugin_version = "1.0.0"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
