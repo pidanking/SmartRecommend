@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.9"
+    plugin_version = "1.1.0"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -64,7 +64,7 @@ class SmartRecommend(_PluginBase):
     _cache_version: str = ""  # 缓存版本，用于检测插件更新
     
     # 当前插件版本
-    CURRENT_VERSION = "1.0.9"
+    CURRENT_VERSION = "1.1.0"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -1115,14 +1115,32 @@ class SmartRecommend(_PluginBase):
             
             recommendations = json.loads(content)
             
-            # 验证分类名称并构建结果
+            # 验证分类名称并构建结果 - 确保强制所有分类都存在
             valid_recommendations = {}
+            
+            # 1. 先处理 LLM 返回的分类
             for category, status_data in recommendations.items():
                 if category in category_names and isinstance(status_data, dict):
                     valid_recommendations[category] = {}
                     for status, items in status_data.items():
                         if status in ["正在播出", "即将上映", "已完结"] and isinstance(items, list):
                             valid_recommendations[category][status] = items
+            
+            # 2. 强制添加所有分类，即使 LLM 没返回
+            for category in category_names:
+                if category not in valid_recommendations:
+                    # 初始化完整结构
+                    valid_recommendations[category] = {
+                        "正在播出": [],
+                        "即将上映": [],
+                        "已完结": []
+                    }
+            
+            # 3. 确保每个分类都有完整的状态结构
+            for category, status_data in valid_recommendations.items():
+                for status in ["正在播出", "即将上映", "已完结"]:
+                    if status not in status_data:
+                        status_data[status] = []
             
             # 补充 poster 等信息 - 改进匹配逻辑
             for category, status_data in valid_recommendations.items():
@@ -1131,42 +1149,84 @@ class SmartRecommend(_PluginBase):
                         item_title = item.get("title", "").lower().strip()
                         item_tmdb_id = item.get("tmdb_id")
                         
-                        # 从热播数据中查找 poster - 改进匹配
-                        for t in trending:
-                            t_title = t.get("title", "").lower().strip()
-                            t_original = t.get("original_title", "").lower().strip()
-                            t_tmdb_id = t.get("tmdb_id")
-                            
-                            # 多重匹配：标题完全匹配、原标题匹配、TMDB ID 匹配
-                            title_match = t_title == item_title
-                            original_match = t_original == item_title
-                            id_match = t_tmdb_id is not None and t_tmdb_id == item_tmdb_id
-                            
-                            if title_match or original_match or id_match:
-                                item["poster"] = t.get("poster")
-                                if not item.get("type"):
-                                    item["type"] = t.get("type")
-                                if not item.get("year"):
-                                    item["year"] = t.get("year")
-                                if not item.get("rating"):
-                                    item["rating"] = t.get("rating")
-                                break
+                        # 从热播数据中查找 poster - 改进匹配逻辑
+                        # 1. 先尝试 TMDB ID 精确匹配（最高优先级）
+                        poster_found = False
+                        
+                        if item_tmdb_id:
+                            for t in trending:
+                                t_tmdb_id = t.get("tmdb_id")
+                                if t_tmdb_id is not None and t_tmdb_id == item_tmdb_id:
+                                    item["poster"] = t.get("poster")
+                                    if not item.get("type"):
+                                        item["type"] = t.get("type")
+                                    if not item.get("year"):
+                                        item["year"] = t.get("year")
+                                    if not item.get("rating"):
+                                        item["rating"] = t.get("rating")
+                                    poster_found = True
+                                    break
+                        
+                        # 2. 标题多重匹配（如果 ID 匹配失败）
+                        if not poster_found and item_title:
+                            for t in trending:
+                                t_title = t.get("title", "").lower().strip()
+                                t_original = t.get("original_title", "").lower().strip()
+                                
+                                # 匹配策略 1: item.title 匹配 trending.title 或 trending.original_title
+                                if item_title == t_title or item_title == t_original:
+                                    item["poster"] = t.get("poster")
+                                    if not item.get("type"):
+                                        item["type"] = t.get("type")
+                                    if not item.get("year"):
+                                        item["year"] = t.get("year")
+                                    if not item.get("rating"):
+                                        item["rating"] = t.get("rating")
+                                    poster_found = True
+                                    break
+                                
+                                # 匹配策略 2: 去除特殊字符和标点后再匹配
+                                clean_item = re.sub(r'[^\w\s]', '', item_title)
+                                clean_trend = re.sub(r'[^\w\s]', '', t_title)
+                                clean_trend_original = re.sub(r'[^\w\s]', '', t_original)
+                                
+                                if clean_item == clean_trend or clean_item == clean_trend_original:
+                                    item["poster"] = t.get("poster")
+                                    if not item.get("type"):
+                                        item["type"] = t.get("type")
+                                    if not item.get("year"):
+                                        item["year"] = t.get("year")
+                                    if not item.get("rating"):
+                                        item["rating"] = t.get("rating")
+                                    poster_found = True
+                                    break
+                                
+                                # 匹配策略 3: 部分匹配（剧集名可能包含年份）
+                                if f"({item.get('year', '')})" in t_title or clean_item in clean_trend:
+                                    item["poster"] = t.get("poster")
+                                    if not item.get("type"):
+                                        item["type"] = t.get("type")
+                                    if not item.get("year"):
+                                        item["year"] = t.get("year")
+                                    if not item.get("rating"):
+                                        item["rating"] = t.get("rating")
+                                    poster_found = True
+                                    break
+                        
+                        # 记录未找到海报的项
+                        if not poster_found and item_title:
+                            logger.debug(f"[SmartRecommend] 未找到海报的媒体: {item.get('title', 'unknown')}, TMDB ID: {item_tmdb_id}")
             
-            # 补充空分类 - 确保所有分类都显示
+            # 现在所有分类都已确保存在且结构完整
+            # 如果有规则匹配的数据，优先填充空分类
             for category in category_names:
-                if category not in valid_recommendations:
-                    # 使用规则匹配的结果填充
-                    if category in categorized_trending:
-                        valid_recommendations[category] = categorized_trending[category]
-                    else:
-                        # 初始化为空结构
-                        valid_recommendations[category] = {"正在播出": [], "即将上映": [], "已完结": []}
-            
-            # 补充每个分类下的空状态
-            for category, status_data in valid_recommendations.items():
-                for status in ["正在播出", "即将上映", "已完结"]:
-                    if status not in status_data:
-                        status_data[status] = []
+                if category in categorized_trending and category in valid_recommendations:
+                    for status in ["正在播出", "即将上映", "已完结"]:
+                        trend_items = categorized_trending[category].get(status, [])
+                        current_items = valid_recommendations[category].get(status, [])
+                        # 只有在当前为空且有趋势数据时才填充
+                        if not current_items and trend_items:
+                            valid_recommendations[category][status] = trend_items[:5]  # 最多取5个
             
             return valid_recommendations
             
