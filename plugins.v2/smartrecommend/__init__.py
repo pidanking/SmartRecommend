@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.4"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -706,12 +706,11 @@ class SmartRecommend(_PluginBase):
             return []
 
     def _get_trending_media(self) -> List[dict]:
-        """获取热播数据（从 TMDB）"""
+        """获取热播数据（从 TMDB），并获取详细信息"""
         trending_list = []
         
         try:
             # TMDB API
-            # 优先从 MP 设置获取，否则使用插件配置
             tmdb_api_key = getattr(settings, "TMDB_API_KEY", "") or self._tmdb_api_key
             
             # 获取热播电影和电视剧
@@ -721,56 +720,240 @@ class SmartRecommend(_PluginBase):
                 resp.raise_for_status()
                 data = resp.json()
                 
-                for item in data.get("results", [])[:20]:
+                for item in data.get("results", [])[:15]:  # 减少数量，避免 API 调用过多
+                    tmdb_id = item.get("id")
+                    
+                    # 获取详细信息（包含播出状态）
+                    detail = self._get_tmdb_detail(tmdb_id, media_type, tmdb_api_key)
+                    
                     trending_list.append({
                         "title": item.get("title") or item.get("name", ""),
+                        "original_title": item.get("original_title") or item.get("original_name", ""),
                         "type": "电影" if media_type == "movie" else "电视剧",
+                        "media_type": media_type,
                         "year": (item.get("release_date") or item.get("first_air_date", ""))[:4] if item.get("release_date") or item.get("first_air_date") else None,
                         "rating": item.get("vote_average"),
-                        "genres": [],  # TMDB 返回的是 genre_ids，需要转换
-                        "tmdb_id": item.get("id"),
+                        "genres": detail.get("genres", []),
+                        "tmdb_id": tmdb_id,
                         "poster": f"https://image.tmdb.org/t/p/w500{item.get('poster_path')}" if item.get("poster_path") else None,
-                        "overview": item.get("overview", "")
+                        "overview": item.get("overview", ""),
+                        "status": detail.get("status", ""),
+                        "in_production": detail.get("in_production", False),
+                        "next_episode": detail.get("next_episode_to_air"),
+                        "original_language": item.get("original_language", ""),
+                        "origin_country": item.get("origin_country", []),
                     })
         except Exception as e:
             logger.error(f"[SmartRecommend] 获取热播数据失败: {e}")
         
         return trending_list
-
-    def _get_media_status(self, item: dict, media_type: str) -> str:
-        """判断媒体播出状态"""
+    
+    def _get_tmdb_detail(self, tmdb_id: int, media_type: str, api_key: str) -> dict:
+        """获取 TMDB 详情信息"""
         try:
+            url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={api_key}&language=zh-CN"
+            resp = requests.get(url, timeout=5)
+            if resp.ok:
+                data = resp.json()
+                genres = [g.get("name", "") for g in data.get("genres", [])]
+                return {
+                    "status": data.get("status", ""),
+                    "in_production": data.get("in_production", False),
+                    "next_episode_to_air": data.get("next_episode_to_air"),
+                    "genres": genres,
+                }
+        except Exception:
+            pass
+        return {}
+
+    def _get_media_status(self, item: dict) -> str:
+        """判断媒体播出状态 - 使用 TMDB 详细信息"""
+        try:
+            media_type = item.get("media_type", "tv")
+            status = item.get("status", "")
+            in_production = item.get("in_production", False)
+            next_episode = item.get("next_episode")
+            
             if media_type == "movie":
                 # 电影：根据上映日期判断
-                release_date = item.get("release_date", "")
+                release_date = item.get("release_date", "") or item.get("year")
                 if release_date:
-                    release = datetime.strptime(release_date, "%Y-%m-%d")
-                    now = datetime.now()
-                    if release > now:
-                        return "即将上映"
-                    else:
-                        return "已上映"
-                return "未知"
+                    if isinstance(release_date, str) and len(release_date) >= 4:
+                        year = int(release_date[:4]) if release_date[:4].isdigit() else None
+                        if year:
+                            now_year = datetime.now().year
+                            if year > now_year:
+                                return "即将上映"
+                            else:
+                                return "已上映"
+                return "已上映"
             else:
-                # 电视剧：根据状态判断
-                status = item.get("status", "")
-                if status == "Returning Series":
+                # 电视剧：优先使用 status 字段
+                if status == "Returning Series" or in_production:
                     return "正在播出"
                 elif status == "Ended":
                     return "已完结"
                 elif status == "Canceled":
                     return "已取消"
                 
+                # 有下一集 = 正在播出
+                if next_episode:
+                    return "正在播出"
+                
                 # 根据日期判断
                 first_air_date = item.get("first_air_date", "")
+                if not first_air_date and item.get("year"):
+                    first_air_date = f"{item.get('year')}-01-01"
+                
                 if first_air_date:
-                    first_air = datetime.strptime(first_air_date, "%Y-%m-%d")
-                    now = datetime.now()
-                    if first_air > now:
-                        return "即将播出"
+                    try:
+                        first_air = datetime.strptime(first_air_date[:10], "%Y-%m-%d")
+                        now = datetime.now()
+                        if first_air > now:
+                            return "即将播出"
+                    except:
+                        pass
+                
+                # 默认返回正在播出（热门内容）
                 return "正在播出"
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[SmartRecommend] 获取播出状态失败: {e}")
             return "未知"
+
+    def _match_emby_category(self, item: dict, emby_categories: List[dict]) -> str:
+        """根据媒体信息匹配 Emby 分类"""
+        title = item.get("title", "").lower()
+        original_title = item.get("original_title", "").lower()
+        original_language = item.get("original_language", "")
+        origin_country = item.get("origin_country", [])
+        genres = item.get("genres", [])
+        media_type = item.get("media_type", "tv")
+        item_type = item.get("type", "电视剧")
+        
+        # 获取分类名列表
+        category_names = [c.get("name", "") for c in emby_categories]
+        
+        # 关键词匹配规则
+        rules = {
+            "国产剧": {
+                "keywords": ["国产", "中国", "大陆", "内地"],
+                "language": ["zh", "cn"],
+                "country": ["CN", "CHN", "China"]
+            },
+            "韩剧": {
+                "keywords": ["韩", "韩国", "korean"],
+                "language": ["ko", "kr"],
+                "country": ["KR", "KOR", "South Korea"]
+            },
+            "欧美剧": {
+                "keywords": ["美", "英", "欧"],
+                "language": ["en"],
+                "country": ["US", "GB", "UK", "USA"]
+            },
+            "日剧": {
+                "keywords": ["日", "日本"],
+                "language": ["ja", "jp"],
+                "country": ["JP", "JPN", "Japan"]
+            },
+            "华语电影": {
+                "keywords": ["华语"],
+                "language": ["zh", "cn"],
+                "type": "电影"
+            },
+            "欧美电影": {
+                "keywords": ["美", "欧"],
+                "type": "电影"
+            },
+            "日韩电影": {
+                "keywords": ["日", "韩"],
+                "type": "电影"
+            },
+            "动画电影": {
+                "genres": ["动画", "Animation", "Anime"],
+                "type": "电影"
+            },
+            "国漫": {
+                "keywords": ["国漫", "国产动画"],
+                "language": ["zh", "cn"],
+                "genres": ["动画", "Animation", "Anime"]
+            },
+            "日漫": {
+                "keywords": ["日漫", "日本动画", "anime"],
+                "language": ["ja", "jp"],
+                "genres": ["动画", "Animation", "Anime"]
+            },
+            "欧美动漫": {
+                "keywords": ["欧美动画"],
+                "language": ["en"],
+                "genres": ["动画", "Animation"]
+            },
+            "综艺": {
+                "genres": ["综艺", "Reality", "Talk"]
+            },
+            "纪录片": {
+                "genres": ["纪录", "Documentary"]
+            }
+        }
+        
+        # 检查标题和原标题关键词
+        full_text = f"{title} {original_title}"
+        
+        for cat_name in category_names:
+            if cat_name not in rules:
+                continue
+            
+            rule = rules[cat_name]
+            
+            # 检查关键词
+            keywords = rule.get("keywords", [])
+            for kw in keywords:
+                if kw.lower() in full_text:
+                    return cat_name
+            
+            # 检查语言
+            if original_language and original_language in rule.get("language", []):
+                # 如果有类型限制，检查类型
+                if "type" in rule:
+                    if rule["type"] in item_type:
+                        return cat_name
+                elif "genres" in rule:
+                    # 检查是否是动画
+                    if media_type == "tv" and any(g in genres for g in ["Animation", "Anime", "动画"]):
+                        return cat_name
+                    elif media_type == "tv":
+                        # 非动画，但是语言匹配
+                        return cat_name
+                else:
+                    return cat_name
+            
+            # 检查产地
+            if origin_country:
+                for country in origin_country:
+                    if country in rule.get("country", []):
+                        return cat_name
+            
+            # 检查类型限制
+            if "type" in rule and rule["type"] in item_type:
+                # 检查类型匹配
+                if "genres" not in rule:
+                    return cat_name
+            
+            # 检查类型 + 类型
+            if "type" in rule and rule["type"] in item_type:
+                return cat_name
+        
+        # 默认分类
+        if "电影" in item_type:
+            if "欧美电影" in category_names:
+                return "欧美电影"
+        else:
+            if "国产剧" in category_names:
+                return "国产剧"
+        
+        # 返回第一个分类
+        if category_names:
+            return category_names[0]
+        return "推荐"
 
     def _analyze_with_llm(self, watch_history: List[dict], categories: List[dict], trending: List[dict]) -> dict:
         """使用 LLM 分析并生成推荐，按 Emby 分类 + 播出状态划分"""
@@ -778,19 +961,28 @@ class SmartRecommend(_PluginBase):
         # 构建分类列表
         category_names = [c["name"] for c in categories if c.get("name")]
         
-        # 按播出状态分组热播内容
-        now_airing = []
-        coming_soon = []
-        finished = []
+        # 先对热播内容进行分类和状态分组
+        categorized_trending = {}
+        for cat in category_names:
+            categorized_trending[cat] = {"正在播出": [], "即将上映": [], "已完结": []}
         
         for t in trending:
-            status = self._get_media_status(t, t.get("media_type", "tv"))
+            # 获取播出状态
+            status = self._get_media_status(t)
+            
+            # 匹配 Emby 分类
+            category = self._match_emby_category(t, categories)
+            
+            if category not in categorized_trending:
+                category = category_names[0] if category_names else "推荐"
+            
+            # 按状态分组
             if status in ["正在播出", "正在更新"]:
-                now_airing.append(t)
+                categorized_trending[category]["正在播出"].append(t)
             elif status in ["即将上映", "即将播出"]:
-                coming_soon.append(t)
+                categorized_trending[category]["即将上映"].append(t)
             else:
-                finished.append(t)
+                categorized_trending[category]["已完结"].append(t)
         
         # 构建提示词
         prompt = f"""你是一个专业的影视推荐专家。根据用户的观看历史，为用户推荐最合适的影视作品。
@@ -801,26 +993,14 @@ class SmartRecommend(_PluginBase):
 ## Emby 媒体库分类（必须使用这些分类名称）
 {chr(10).join(f'- {cat}' for cat in category_names)}
 
-## 当前热播内容
-
-### 正在播出 ({len(now_airing)}部)
-{self._format_trending(now_airing[:15])}
-
-### 即将上映 ({len(coming_soon)}部)
-{self._format_trending(coming_soon[:10])}
-
-### 已完结/已上映 ({len(finished)}部)
-{self._format_trending(finished[:15])}
+## 当前热播内容（已按分类和播出状态分组）
+{self._format_categorized_trending(categorized_trending)}
 
 ## 推荐要求
 1. 必须使用上面列出的 Emby 媒体库分类名称，不要创造新分类
-2. 每个分类下必须按三种播出状态组织：
-   - "正在播出": 当前正在更新/播出的内容
-   - "即将上映": 还未上映/播出的内容  
-   - "已完结": 已完结或已上映的内容
-3. 每个状态下推荐 1-3 部作品
-4. 优先推荐符合用户观看偏好的内容
-5. 返回严格的 JSON 格式：
+2. 每个分类下按三种播出状态组织：正在播出、即将上映、已完结
+3. 每个状态下推荐 1-5 部作品，优先选择符合用户观看偏好的内容
+4. 返回严格的 JSON 格式：
 
 ```json
 {{
@@ -870,38 +1050,55 @@ class SmartRecommend(_PluginBase):
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             
             # 解析 JSON
-            # 尝试提取 JSON 块
             json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
             if json_match:
                 content = json_match.group(1)
             
             recommendations = json.loads(content)
             
-            # 补充 poster 等信息 - 新版嵌套结构
+            # 验证分类名称
+            valid_recommendations = {}
             for category, status_data in recommendations.items():
-                if not isinstance(status_data, dict):
-                    continue
+                # 只接受 Emby 中存在的分类
+                if category in category_names and isinstance(status_data, dict):
+                    valid_recommendations[category] = {}
+                    for status, items in status_data.items():
+                        if status in ["正在播出", "即将上映", "已完结"] and isinstance(items, list):
+                            valid_recommendations[category][status] = items
+            
+            # 补充 poster 等信息
+            for category, status_data in valid_recommendations.items():
                 for status, items in status_data.items():
-                    if not isinstance(items, list):
-                        continue
                     for item in items:
                         # 从热播数据中查找 poster
                         for t in trending:
-                            if t.get("title") == item.get("title") or t.get("tmdb_id") == item.get("tmdb_id"):
+                            title_match = (t.get("title", "").lower() == item.get("title", "").lower() or
+                                         t.get("original_title", "").lower() == item.get("title", "").lower())
+                            id_match = t.get("tmdb_id") == item.get("tmdb_id")
+                            if title_match or id_match:
                                 item["poster"] = t.get("poster")
                                 if not item.get("type"):
                                     item["type"] = t.get("type")
                                 break
             
-            return recommendations
+            # 补充空分类（使用规则匹配的结果）
+            for category in category_names:
+                if category not in valid_recommendations:
+                    if category in categorized_trending:
+                        valid_recommendations[category] = categorized_trending[category]
+            
+            return valid_recommendations
             
         except json.JSONDecodeError as e:
             logger.error(f"[SmartRecommend] LLM 返回 JSON 解析失败: {e}")
             logger.error(f"[SmartRecommend] 原始内容: {content[:500]}")
-            return {}
+            # 返回规则匹配结果作为备选
+            logger.info("[SmartRecommend] 使用规则匹配结果作为备选")
+            return categorized_trending
         except Exception as e:
             logger.error(f"[SmartRecommend] LLM 调用失败: {e}")
-            return {}
+            # 返回规则匹配结果作为备选
+            return categorized_trending
 
     def _format_watch_history(self, history: List[dict]) -> str:
         """格式化观看历史"""
@@ -917,7 +1114,23 @@ class SmartRecommend(_PluginBase):
         lines = []
         for i, item in enumerate(trending, 1):
             rating = f"评分{item.get('rating')}" if item.get("rating") else ""
-            lines.append(f"{i}. {item.get('title', '')} ({item.get('year', '未知')}) - {item.get('type', '')} {rating}")
+            genres = ", ".join(item.get("genres", [])[:2])
+            lines.append(f"{i}. {item.get('title', '')} ({item.get('year', '未知')}) - {item.get('type', '')} {rating} [{genres}]")
+        return "\n".join(lines)
+    
+    def _format_categorized_trending(self, categorized: dict) -> str:
+        """格式化已分类的热播内容"""
+        lines = []
+        for category, status_data in categorized.items():
+            total = sum(len(items) for items in status_data.values())
+            if total > 0:
+                lines.append(f"\n### {category} ({total}部)")
+                for status, items in status_data.items():
+                    if items:
+                        lines.append(f"\n**{status}** ({len(items)}部)")
+                        for item in items[:5]:
+                            rating = f"评分{item.get('rating'):.1f}" if item.get("rating") else ""
+                            lines.append(f"  - {item.get('title', '')} ({item.get('year', '')}) {rating}")
         return "\n".join(lines)
 
     def _get_category_icon(self, category: str) -> str:
