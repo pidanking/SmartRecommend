@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.3"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -74,7 +74,7 @@ class SmartRecommend(_PluginBase):
     _api_max_calls_per_window: int = 10  # 每个窗口最大调用次数
     
     # 当前插件版本
-    CURRENT_VERSION = "1.1.2"
+    CURRENT_VERSION = "1.1.3"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -171,11 +171,19 @@ class SmartRecommend(_PluginBase):
                 logger.info(f"[SmartRecommend] 检测到插件版本更新 ({self._cache_version} -> {self.CURRENT_VERSION})，清除缓存")
                 self._recommend_cache = {}
                 self._last_refresh = ""
+                self._media_status_cache = {}  # 清除状态缓存，确保获取最新状态
                 self._cache_version = self.CURRENT_VERSION
-                self._save_config()
+                
+                # 保存配置（包括清空后的缓存）
+                self.update_config({
+                    "recommend_cache": {},
+                    "last_refresh": "",
+                    "cache_version": self.CURRENT_VERSION
+                })
                 
                 # 版本更新后自动刷新一次
                 if self._enabled:
+                    logger.info("[SmartRecommend] 版本更新后自动刷新推荐")
                     self._onlyonce = True
 
         # 立即运行一次
