@@ -28,7 +28,7 @@ class SmartRecommend(_PluginBase):
     plugin_name = "AI智能推荐"
     plugin_desc = "基于观看历史和热播数据，使用 AI 生成个性化推荐"
     plugin_icon = "smartrecommend.png"
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     plugin_author = "皮蛋哥"
     author_url = "https://github.com/pidan2026"
     plugin_config_prefix = "smartrecommend_"
@@ -74,7 +74,7 @@ class SmartRecommend(_PluginBase):
     _api_max_calls_per_window: int = 10  # 每个窗口最大调用次数
     
     # 当前插件版本
-    CURRENT_VERSION = "1.2.1"
+    CURRENT_VERSION = "1.2.2"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -441,7 +441,6 @@ class SmartRecommend(_PluginBase):
     def get_page(self) -> List[dict]:
         """仪表盘页面 - 按 Emby 分类 + 播出状态展示"""
         recommendations = self._recommend_cache or {}
-        categories = self._get_emby_categories()
         
         # 如果没有缓存，显示提示
         if not recommendations:
@@ -480,12 +479,31 @@ class SmartRecommend(_PluginBase):
                 }
             ]
         
-        # 构建推荐卡片 - 按分类+状态展示
+        # 获取 Emby 分类并构建完整分类列表
+        categories = self._get_emby_categories()
+        excluded_categories = ["食贫道", "演唱会", "其他动漫"]
+        emby_category_names = [c["name"] for c in categories if c.get("name") and c["name"] not in excluded_categories]
+        
+        # 默认完整15个分类
+        default_categories = [
+            "国产剧", "韩剧", "欧美剧", "日剧",
+            "欧美电影", "华语电影", "日韩电影", "动画电影",
+            "国漫", "日漫", "欧美动漫", "儿童动漫",
+            "综艺", "纪录片", "未分类"
+        ]
+        
+        # 合并并去重，确保包含所有15个分类
+        all_categories = list(dict.fromkeys(emby_category_names + default_categories))
+        all_categories = [c for c in all_categories if c not in excluded_categories]
+        
+        # 构建推荐卡片 - 按分类+状态展示（强制显示所有15个分类）
         cards = []
         
-        for category, status_data in recommendations.items():
+        for category in all_categories:
+            # 获取该分类的推荐数据，如果不存在则初始化空结构
+            status_data = recommendations.get(category)
             if not status_data or not isinstance(status_data, dict):
-                continue
+                status_data = {"正在播出": [], "即将上映": [], "已完结": []}
             
             # 分类标题
             category_header = [
@@ -502,28 +520,77 @@ class SmartRecommend(_PluginBase):
             # 按状态展示
             status_sections = []
             
-            # 正在播出
+            # 强制显示所有三种状态，即使为空
+            # 1. 正在播出
             if status_data.get("正在播出"):
                 status_sections.append(self._build_status_section("正在播出", "mdi-play-circle", "success", status_data["正在播出"]))
+            else:
+                status_sections.append({
+                    "component": "div",
+                    "props": {"class": "mb-4"},
+                    "content": [
+                        {
+                            "component": "div",
+                            "props": {"class": "d-flex align-center mb-2"},
+                            "content": [
+                                {"component": "VIcon", "props": {"start": True, "color": "grey", "size": "small"}, "icon": "mdi-play-circle"},
+                                {"component": "span", "props": {"class": "text-subtitle-1 font-weight-medium ml-1 text-grey"}, "text": "正在播出"},
+                                {"component": "VChip", "props": {"size": "x-small", "class": "ml-2"}, "text": "0"}
+                            ]
+                        },
+                        {"component": "div", "props": {"class": "text-caption text-grey-lighten-1 mt-2"}, "text": "暂无正在播出的推荐"}
+                    ]
+                })
             
-            # 即将上映
+            # 2. 即将上映
             if status_data.get("即将上映"):
                 status_sections.append(self._build_status_section("即将上映", "mdi-clock-outline", "warning", status_data["即将上映"]))
+            else:
+                status_sections.append({
+                    "component": "div",
+                    "props": {"class": "mb-4"},
+                    "content": [
+                        {
+                            "component": "div",
+                            "props": {"class": "d-flex align-center mb-2"},
+                            "content": [
+                                {"component": "VIcon", "props": {"start": True, "color": "grey", "size": "small"}, "icon": "mdi-clock-outline"},
+                                {"component": "span", "props": {"class": "text-subtitle-1 font-weight-medium ml-1 text-grey"}, "text": "即将上映"},
+                                {"component": "VChip", "props": {"size": "x-small", "class": "ml-2"}, "text": "0"}
+                            ]
+                        },
+                        {"component": "div", "props": {"class": "text-caption text-grey-lighten-1 mt-2"}, "text": "暂无即将上映的推荐"}
+                    ]
+                })
             
-            # 已完结
+            # 3. 已完结
             if status_data.get("已完结"):
                 status_sections.append(self._build_status_section("已完结", "mdi-check-circle", "info", status_data["已完结"]))
-            
-            if not status_sections:
-                continue
+            else:
+                status_sections.append({
+                    "component": "div",
+                    "props": {"class": "mb-4"},
+                    "content": [
+                        {
+                            "component": "div",
+                            "props": {"class": "d-flex align-center mb-2"},
+                            "content": [
+                                {"component": "VIcon", "props": {"start": True, "color": "grey", "size": "small"}, "icon": "mdi-check-circle"},
+                                {"component": "span", "props": {"class": "text-subtitle-1 font-weight-medium ml-1 text-grey"}, "text": "已完结"},
+                                {"component": "VChip", "props": {"size": "x-small", "class": "ml-2"}, "text": "0"}
+                            ]
+                        },
+                        {"component": "div", "props": {"class": "text-caption text-grey-lighten-1 mt-2"}, "text": "暂无已完结的推荐"}
+                    ]
+                })
             
             cards.append({
                 "component": "VCol",
-                "props": {"cols": 12},
+                "props": {"cols": 12, "md": 6, "lg": 4},  # 响应式布局：大屏显示3列，中等屏显示2列，小屏显示1列
                 "content": [
                     {
                         "component": "VCard",
-                        "props": {"variant": "outlined", "class": "mb-4"},
+                        "props": {"variant": "outlined", "class": "mb-4", "height": "100%"},
                         "content": [
                             {"component": "VCardTitle", "content": category_header},
                             {"component": "VCardText", "content": status_sections}
